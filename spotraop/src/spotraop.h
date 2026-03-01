@@ -68,6 +68,7 @@ struct sMR {
 	char UDN			[RESOURCE_LENGTH];
 	char FriendlyName	[RESOURCE_LENGTH];
 	struct spotPlayer* SpotPlayer;
+	struct spotPlayer* GroupPlayer;
 	enum spotEvent	SpotState;
 	double			Volume;
 	bool			Muted;

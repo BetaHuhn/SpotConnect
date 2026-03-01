@@ -806,6 +806,7 @@ static void *UpdateThread(void *args) {
 							LOG_INFO("[%p]: removing unresponsive player (%s) with error count %d and timeout %d", Device,
 								      Device->Config.Name, Device->ErrorCount, now - Device->LastSeen);
 							spotDeletePlayer(Device->SpotPlayer);
+							spotDeletePlayer(Device->GroupPlayer);
 							// device's mutex returns unlocked
 							DelMRDevice(Device);
 						} else {
@@ -828,6 +829,7 @@ static void *UpdateThread(void *args) {
 
 				LOG_INFO("[%p]: renderer bye-bye: %s", Device, Device->Config.Name);
 				spotDeletePlayer(Device->SpotPlayer);
+				spotDeletePlayer(Device->GroupPlayer);
 				// device's mutex returns unlocked
 				DelMRDevice(Device);
 
@@ -932,11 +934,10 @@ static void *UpdateThread(void *args) {
 				glUpdated = true;
 			
 				if (AddMRDevice(Device, UDN, DescDoc, Update->Data) && !glDiscovery) {
-					// create a new Spotify Connect device; use group name if device belongs to a group
+					// create a new Spotify Connect device with the device's own name
 					char id[6*2+1] = { 0 };
 					for (int i = 0; i < 6; i++) sprintf(id + i*2, "%02x", Device->Config.mac[i]);
-					char *playerName = *Device->Config.Group ? Device->Config.Group : Device->Config.Name;
-					Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, playerName, id, Device->Credentials, glHost, Device->Config.VorbisRate,
+					Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Name, id, Device->Credentials, glHost, Device->Config.VorbisRate,
 														  Device->Config.Codec, Device->Config.Flow, Device->Config.HTTPContentLength, 
 														  Device->Config.CacheMode, (struct shadowPlayer*) Device, &Device->Mutex);
 					if (!Device->SpotPlayer) {
@@ -944,11 +945,32 @@ static void *UpdateThread(void *args) {
 						pthread_mutex_lock(&Device->Mutex);
 						DelMRDevice(Device);
 					}
+					// if the device belongs to a group, also create a group-level Spotify Connect player
+					if (Device->SpotPlayer && *Device->Config.Group) {
+						char groupId[6*2+1] = { 0 };
+						uint8_t groupMac[6] = { 0xAA, 0xAA };
+						*(uint32_t*)(groupMac + 2) = hash32(Device->Config.Group);
+						for (int i = 0; i < 6; i++) sprintf(groupId + i*2, "%02x", groupMac[i]);
+						Device->GroupPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Group, groupId, Device->Credentials, glHost, Device->Config.VorbisRate,
+															   Device->Config.Codec, Device->Config.Flow, Device->Config.HTTPContentLength,
+															   Device->Config.CacheMode, (struct shadowPlayer*) Device, &Device->Mutex);
+						if (!Device->GroupPlayer) {
+							LOG_ERROR("[%p]: cannot create group Spotify instance (%s)", Device, Device->Config.Group);
+						}
+					}
 				} else if (!glDiscovery && Device->Running && Device->Master && *Device->Config.Group &&
 					   *Device->Master->Config.Group && !strcmp(Device->Config.Group, Device->Master->Config.Group) &&
-					   Device->Master->SpotPlayer) {
-					// slave device for a config group: register with the master's player
-					spotAddGroupMember(Device->Master->SpotPlayer, (struct shadowPlayer*) Device);
+					   Device->Master->GroupPlayer) {
+					// slave device: create its own individual SpotPlayer and register with master's group player
+					char id[6*2+1] = { 0 };
+					for (int i = 0; i < 6; i++) sprintf(id + i*2, "%02x", Device->Config.mac[i]);
+					Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Name, id, Device->Credentials, glHost, Device->Config.VorbisRate,
+														  Device->Config.Codec, Device->Config.Flow, Device->Config.HTTPContentLength,
+														  Device->Config.CacheMode, (struct shadowPlayer*) Device, &Device->Mutex);
+					if (!Device->SpotPlayer) {
+						LOG_ERROR("[%p]: cannot create Spotify instance for slave (%s)", Device, Device->Config.Name);
+					}
+					spotAddGroupMember(Device->Master->GroupPlayer, (struct shadowPlayer*) Device);
 					LOG_INFO("[%p]: registered config group slave %s with master %s", Device, Device->Config.Name, Device->Master->Config.Name);
 				}
 
@@ -1043,6 +1065,7 @@ static bool AddMRDevice(struct sMR* Device, char* UDN, IXML_Document* DescDoc, c
 	Device->TimeOut = false;
 	Device->WaitCookie = Device->StartCookie = Device->LastCookie = NULL;
 	Device->SpotPlayer = NULL;
+	Device->GroupPlayer = NULL;
 	Device->Elapsed = 0;
 	Device->seqN = NULL;
 	Device->TrackPoll = Device->StatePoll = 0;

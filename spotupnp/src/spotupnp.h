@@ -77,6 +77,7 @@ struct sMR {
 	enum eMRstate 	State;
 	bool			ExpectStop;
 	struct spotPlayer *SpotPlayer;
+	struct spotPlayer *GroupPlayer;
 	metadata_t		MetaData;
 	enum spotEvent	SpotState;
 	uint32_t		Elapsed, ElapsedAccrued;
