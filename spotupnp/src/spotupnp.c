@@ -932,10 +932,11 @@ static void *UpdateThread(void *args) {
 				glUpdated = true;
 			
 				if (AddMRDevice(Device, UDN, DescDoc, Update->Data) && !glDiscovery) {
-					// create a new Spotify Connect device
+					// create a new Spotify Connect device; use group name if device belongs to a group
 					char id[6*2+1] = { 0 };
 					for (int i = 0; i < 6; i++) sprintf(id + i*2, "%02x", Device->Config.mac[i]);
-					Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Name, id, Device->Credentials, glHost, Device->Config.VorbisRate,
+					char *playerName = *Device->Config.Group ? Device->Config.Group : Device->Config.Name;
+					Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, playerName, id, Device->Credentials, glHost, Device->Config.VorbisRate,
 														  Device->Config.Codec, Device->Config.Flow, Device->Config.HTTPContentLength, 
 														  Device->Config.CacheMode, (struct shadowPlayer*) Device, &Device->Mutex);
 					if (!Device->SpotPlayer) {

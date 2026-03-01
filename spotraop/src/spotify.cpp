@@ -120,6 +120,8 @@ void CSpotPlayer::disconnect(bool abort) {
 
 void CSpotPlayer::addGroupMember(struct shadowPlayer* member) {
     groupMembers.push_back(member);
+    // sync current volume to the new group member
+    shadowRequest(member, SPOT_VOLUME, volume);
     CSPOT_LOG(info, "added group member %p to player <%s>", member, name.c_str());
 }
 
@@ -354,6 +356,7 @@ void CSpotPlayer::eventHandler(std::unique_ptr<cspot::SpircHandler::Event> event
     case cspot::SpircHandler::EventType::VOLUME:
         volume = std::get<int>(event->data);
         shadowRequest(shadow, SPOT_VOLUME, volume);
+        for (auto m : groupMembers) shadowRequest(m, SPOT_VOLUME, volume);
         break;
     default:
         break;

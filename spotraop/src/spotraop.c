@@ -426,11 +426,12 @@ static bool mDNSsearchCallback(mdnssd_service_t *slist, void *cookie, bool *stop
 		}
 
 		if (AddRaopDevice(Device, s) && !glDiscovery) {
-			// create a new spotify device (master)
+			// create a new spotify device (master); use group name if device belongs to a group
 			char id[6 * 2 + 1] = { 0 };
 			for (int i = 0; i < 6; i++) sprintf(id + i * 2, "%02x", Device->Config.MAC[i]);
 			if (!*(Device->Config.Name)) sprintf(Device->Config.Name, glNameFormat, Device->FriendlyName);
-			Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Name, id, Device->Credentials, glHost, Device->Config.VorbisRate, 
+			char *playerName = *Device->Config.Group ? Device->Config.Group : Device->Config.Name;
+			Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, playerName, id, Device->Credentials, glHost, Device->Config.VorbisRate, 
 												  FRAMES_PER_BLOCK, Device->Config.ReadAhead, (struct shadowPlayer*)Device);
 			glUpdated = true;
 		} else if (!glDiscovery && Device->Running && Device->Master && *Device->Config.Group &&

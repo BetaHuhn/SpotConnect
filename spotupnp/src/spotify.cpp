@@ -166,6 +166,8 @@ CSpotPlayer::~CSpotPlayer() {
 
 void CSpotPlayer::addGroupMember(struct shadowPlayer* member) {
     groupStreams.emplace_back(member, std::deque<std::shared_ptr<HTTPstreamer>>());
+    // sync current volume to the new group member
+    shadowRequest(member, SPOT_VOLUME, volume);
     CSPOT_LOG(info, "added group member %p to player <%s>", member, name.c_str());
 }
 
@@ -463,6 +465,7 @@ void CSpotPlayer::trackHandler(std::string_view trackUnique) {
     case cspot::SpircHandler::EventType::VOLUME:
         volume = std::get<int>(event->data);
         shadowRequest(shadow, SPOT_VOLUME, volume);
+        for (auto& gs : groupStreams) shadowRequest(gs.first, SPOT_VOLUME, volume);
         break;
     case cspot::SpircHandler::EventType::TRACK_INFO: {
         /* We can't use this directly to to set player->trackInfo because with ICY mode, the metadata
