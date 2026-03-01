@@ -56,6 +56,7 @@ typedef struct sMRConfig
 	int			VolumeMode;
 	int			VolumeFeedback;
 	bool		AlacEncode;
+	char		Group[STR_LEN];
 } tMRConfig;
 
 
@@ -80,6 +81,7 @@ struct sMR {
 	char ActiveRemote[16];
 	uint32_t SkipStart;
 	bool SkipDir;
+	struct sMR		*Master;
 };
 
 extern char 				glInterface[128];

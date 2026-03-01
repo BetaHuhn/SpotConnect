@@ -82,6 +82,7 @@ The default configuration file is `config.xml`, stored in the same directory as 
 - `name`        : The name that will appear for the device in AirPlay. You can change the default name.
 - `vorbis_rate <96|160|320>` : set the Spotify bitrate
 - `remove_timeout <-1|n>` : set to `-1` to avoid removing devices prematurely
+- `group <name>` : assign the device to a named group. All devices sharing the same group name will play simultaneously. The first discovered device in a group becomes the Spotify Connect endpoint; the others stream audio in parallel. This enables multi-room playback without Sonos hardware grouping.
 
 ##### UPnP
 - `upnp_max`    : set the maximum UPnP version use to search players (default 1)

@@ -426,13 +426,19 @@ static bool mDNSsearchCallback(mdnssd_service_t *slist, void *cookie, bool *stop
 		}
 
 		if (AddRaopDevice(Device, s) && !glDiscovery) {
-			// create a new spotify device
+			// create a new spotify device (master)
 			char id[6 * 2 + 1] = { 0 };
 			for (int i = 0; i < 6; i++) sprintf(id + i * 2, "%02x", Device->Config.MAC[i]);
 			if (!*(Device->Config.Name)) sprintf(Device->Config.Name, glNameFormat, Device->FriendlyName);
 			Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Name, id, Device->Credentials, glHost, Device->Config.VorbisRate, 
 												  FRAMES_PER_BLOCK, Device->Config.ReadAhead, (struct shadowPlayer*)Device);
 			glUpdated = true;
+		} else if (!glDiscovery && Device->Running && Device->Master && *Device->Config.Group &&
+				   *Device->Master->Config.Group && !strcmp(Device->Config.Group, Device->Master->Config.Group) &&
+				   Device->Master->SpotPlayer) {
+			// slave device for a config group: register with the master's player
+			spotAddGroupMember(Device->Master->SpotPlayer, (struct shadowPlayer*)Device);
+			LOG_INFO("[%p]: registered config group slave %s with master %s", Device, Device->Config.Name, Device->Master->Config.Name);
 		}
 	}
 
@@ -542,6 +548,7 @@ static bool AddRaopDevice(struct sMR *Device, mdnssd_service_t *s) {
 	Device->SpotPlayer		= NULL;
 	Device->Raop 			= NULL;
 	Device->Expired			= 0;
+	Device->Master			= NULL;
 	
 	memset(Device->ActiveRemote, 0, 16);
 
@@ -584,8 +591,24 @@ static bool AddRaopDevice(struct sMR *Device, mdnssd_service_t *s) {
 		}
 	}
 
-	LOG_INFO("[%p]: adding renderer (%s@%s) with mac %hX-%X", Device, Device->FriendlyName, inet_ntoa(Device->PlayerIP),  
-	         *(uint16_t*)Device->Config.MAC, *(uint32_t*)(Device->Config.MAC + 2));
+	// check for config-based group assignment
+	if (*Device->Config.Group) {
+		for (int i = 0; i < MAX_RENDERERS; i++) {
+			struct sMR *p = glMRDevices + i;
+			if (p->Running && p != Device && *p->Config.Group && !strcmp(p->Config.Group, Device->Config.Group)) {
+				Device->Master = p;
+				LOG_INFO("[%p]: config group '%s': %s is slave of %s", Device, Device->Config.Group, Device->UDN, p->UDN);
+				break;
+			}
+		}
+	}
+
+	if (Device->Master) {
+		LOG_INFO("[%p]: adding renderer (%s@%s) as group slave", Device, Device->FriendlyName, inet_ntoa(Device->PlayerIP));
+	} else {
+		LOG_INFO("[%p]: adding renderer (%s@%s) with mac %hX-%X", Device, Device->FriendlyName, inet_ntoa(Device->PlayerIP),
+		         *(uint16_t*)Device->Config.MAC, *(uint32_t*)(Device->Config.MAC + 2));
+	}
 
 	// gather RAOP device capabilities, to be matched later
 	char *SampleSize = GetmDNSAttribute(s->attr, s->attr_count, "ss");
@@ -643,7 +666,8 @@ static bool AddRaopDevice(struct sMR *Device, mdnssd_service_t *s) {
 		return false;
 	}
 
-	return true;
+	// return false for group slaves so no SpotPlayer is created for them
+	return (Device->Master == NULL);
 }
 
 /*----------------------------------------------------------------------------*/

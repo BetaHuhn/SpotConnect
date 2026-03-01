@@ -94,6 +94,7 @@ void SaveConfig(char *name, void *ref, bool full) {
 			XMLAddNode(doc, dev_node, "mac", "%02x:%02x:%02x:%02x:%02x:%02x", p->Config.mac[0],
 						p->Config.mac[1], p->Config.mac[2], p->Config.mac[3], p->Config.mac[4], p->Config.mac[5]);
 			XMLAddNode(doc, dev_node, "enabled", "%d", (int) p->Config.Enabled);
+			if (*p->Config.Group) XMLAddNode(doc, dev_node, "group", p->Config.Group);
 		}
 	}
 
@@ -140,6 +141,7 @@ static void LoadConfigItem(tMRConfig *Conf, char *name, char *val) {
 	if (!strcmp(name, "artwork")) strcpy(Conf->ArtWork, val);
 	if (!strcmp(name, "credentials")) strcpy(Conf->Credentials, val);
 	if (!strcmp(name, "name")) strcpy(Conf->Name, val);
+	if (!strcmp(name, "group")) { strncpy(Conf->Group, val, sizeof(Conf->Group) - 1); Conf->Group[sizeof(Conf->Group) - 1] = '\0'; }
 	if (!strcmp(name, "mac"))  {
 		unsigned mac[6];
 		// seems to be a Windows scanf buf, cannot support %hhx

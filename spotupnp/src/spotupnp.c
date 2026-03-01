@@ -943,6 +943,12 @@ static void *UpdateThread(void *args) {
 						pthread_mutex_lock(&Device->Mutex);
 						DelMRDevice(Device);
 					}
+				} else if (!glDiscovery && Device->Running && Device->Master && *Device->Config.Group &&
+					   *Device->Master->Config.Group && !strcmp(Device->Config.Group, Device->Master->Config.Group) &&
+					   Device->Master->SpotPlayer) {
+					// slave device for a config group: register with the master's player
+					spotAddGroupMember(Device->Master->SpotPlayer, (struct shadowPlayer*) Device);
+					LOG_INFO("[%p]: registered config group slave %s with master %s", Device, Device->Config.Name, Device->Master->Config.Name);
 				}
 
 cleanup:
@@ -1097,6 +1103,19 @@ static bool AddMRDevice(struct sMR* Device, char* UDN, IXML_Document* DescDoc, c
 	Device->Master = GetMaster(Device, &friendlyName);
 	Device->Volume = CtrlGetVolume(Device);
 
+	// if not a Sonos slave, check for config-based group assignment
+	if (!Device->Master && *Device->Config.Group) {
+		for (int i = 0; i < glMaxDevices; i++) {
+			struct sMR *p = glMRDevices + i;
+			if (p->Running && p != Device && *p->Config.Group && !strcmp(p->Config.Group, Device->Config.Group)) {
+				// first discovered device with this group name is master; subsequent ones become slaves
+				Device->Master = p;
+				LOG_INFO("[%p]: config group '%s': %s is slave of %s", Device, Device->Config.Group, UDN, p->UDN);
+				break;
+			}
+		}
+	}
+
 	// set remaining items now that we are sure
 	if (*Device->Service[TOPOLOGY_IDX].ControlURL) {
 		Device->MetaData.duration = 1;
@@ -1148,7 +1167,7 @@ static bool AddMRDevice(struct sMR* Device, char* UDN, IXML_Document* DescDoc, c
 	}
 
 	if (Device->Master) {
-		LOG_INFO("[%p] skipping Sonos slave %s", Device, friendlyName);
+		LOG_INFO("[%p] skipping slave %s (group or Sonos)", Device, friendlyName);
 	} else {
 		LOG_INFO("[%p]: adding renderer (%s) with mac %hX%X", Device, friendlyName, *(uint16_t*)Device->Config.mac, *(uint32_t*)(Device->Config.mac + 2));
 	}

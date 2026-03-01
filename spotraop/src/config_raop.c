@@ -102,6 +102,7 @@ void SaveConfig(char *name, void *ref, bool full) {
 			if (*p->Config.RaopCredentials) XMLAddNode(doc, dev_node, "raop_credentials", p->Config.RaopCredentials);
 			//XMLAddNode(doc, dev_node, "mac", "%02x:%02x:%02x:%02x:%02x:%02x", );
 			XMLAddNode(doc, dev_node, "enabled", "%d", (int) p->Config.Enabled);
+			if (*p->Config.Group) XMLAddNode(doc, dev_node, "group", p->Config.Group);
 		}
 	}
 
@@ -155,6 +156,7 @@ static void LoadConfigItem(tMRConfig *Conf, char *name, char *val) {
 	if (!strcmp(name, "volume_mode")) Conf->VolumeMode = atol(val);
 	if (!strcmp(name, "alac_encode")) Conf->AlacEncode = atol(val);
 	if (!strcmp(name, "name")) strcpy(Conf->Name, val);
+	if (!strcmp(name, "group")) { strncpy(Conf->Group, val, sizeof(Conf->Group) - 1); Conf->Group[sizeof(Conf->Group) - 1] = '\0'; }
 }
 
 /*----------------------------------------------------------------------------*/
