@@ -30,6 +30,7 @@ void				shadowRequest(struct shadowPlayer* shadow, enum spotEvent event, ...);
 struct spotPlayer* spotCreatePlayer(char* clientId, char*clientSecret, char* name, char* id, char *credentials, struct in_addr addr, int audio, 
 									size_t frameSize, uint32_t delay, struct shadowPlayer* shadow);
 void spotDeletePlayer(struct spotPlayer *spotPlayer);
+void spotAddGroupMember(struct spotPlayer *master, struct shadowPlayer *member);
 void spotOpen(uint16_t portBase, uint16_t portRange, char* username, char* password);
 void spotClose(void);
 void spotNotify(struct spotPlayer* spotPlayer, enum shadowEvent event, ...);

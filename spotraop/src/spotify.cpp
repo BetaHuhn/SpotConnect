@@ -62,6 +62,9 @@ private:
     struct shadowPlayer* shadow;
     struct raopcl_s* raopClient;
 
+    // group members: list of additional shadow players to stream to
+    std::vector<struct shadowPlayer*> groupMembers;
+
     cspot::TrackInfo trackInfo;
     int startOffset;
     uint64_t startTime = 0;
@@ -96,6 +99,7 @@ public:
                 size_t frameSize, uint32_t delay, struct shadowPlayer* shadow);
     ~CSpotPlayer();
     void disconnect(bool abort = false);
+    void addGroupMember(struct shadowPlayer* member);
     void friend notify(CSpotPlayer *self, enum shadowEvent event, va_list args);
 };
 
@@ -111,6 +115,14 @@ void CSpotPlayer::disconnect(bool abort) {
     state = abort ? ABORT : DISCO;
     CSPOT_LOG(info, "Disconnecting %s", name.c_str());
     raopcl_disconnect(raopClient);
+    for (auto m : groupMembers) raopcl_disconnect(shadowRaop(m));
+}
+
+void CSpotPlayer::addGroupMember(struct shadowPlayer* member) {
+    groupMembers.push_back(member);
+    // sync current volume to the new group member
+    shadowRequest(member, SPOT_VOLUME, volume);
+    CSPOT_LOG(info, "added group member %p to player <%s>", member, name.c_str());
 }
 
 void CSpotPlayer::info2meta(metadata_t *metadata) {
@@ -177,6 +189,11 @@ size_t CSpotPlayer::writePCM(uint8_t* pcm, size_t bytes, std::string_view trackU
 
     // sending chunk will exit FLUSHED state (might be last packet)
     raopcl_send_chunk(raopClient, data, (consumed + scratchSize) / BYTES_PER_FRAME, &playtime);
+    // send the same chunk to all group members
+    for (auto m : groupMembers) {
+        struct raopcl_s* rc = shadowRaop(m);
+        if (raopcl_accept_frames(rc)) raopcl_send_chunk(rc, data, (consumed + scratchSize) / BYTES_PER_FRAME, &playtime);
+    }
     scratchSize = 0;
 
     return consumed;
@@ -246,10 +263,16 @@ void CSpotPlayer::eventHandler(std::unique_ptr<cspot::SpircHandler::Event> event
         // because we might start "paused", make sure we stop everything
         raopcl_stop(raopClient);
         raopcl_flush(raopClient);
+        for (auto m : groupMembers) {
+            struct raopcl_s* rc = shadowRaop(m);
+            raopcl_stop(rc);
+            raopcl_flush(rc);
+        }
         
         // need to let shadow do as we don't know player's IP and port
         startOffset = std::get<int>(event->data);
         shadowRequest(shadow, SPOT_LOAD);
+        for (auto m : groupMembers) shadowRequest(m, SPOT_LOAD);
 
         CSPOT_LOG(info, "new track will start at %d", startOffset);
 
@@ -265,6 +288,11 @@ void CSpotPlayer::eventHandler(std::unique_ptr<cspot::SpircHandler::Event> event
         if (isPaused) {
             raopcl_pause(raopClient);
             raopcl_flush(raopClient);
+            for (auto m : groupMembers) {
+                struct raopcl_s* rc = shadowRaop(m);
+                raopcl_pause(rc);
+                raopcl_flush(rc);
+            }
             stopTime = gettime_ms64() + 15 * 1000;
             startOffset = raopcl_get_progress_ms(raopClient);
         } else {
@@ -276,10 +304,12 @@ void CSpotPlayer::eventHandler(std::unique_ptr<cspot::SpircHandler::Event> event
 
                 // need to let shadow do as we don't know if metadata are allowed
                 shadowRequest(shadow, SPOT_METADATA, &metadata);
+                for (auto m : groupMembers) shadowRequest(m, SPOT_METADATA, &metadata);
                 trackStatus = TRACK_READY;
             }
             stopTime = 0;
             shadowRequest(shadow, SPOT_PLAY);
+            for (auto m : groupMembers) shadowRequest(m, SPOT_PLAY);
         }
         break;
     }
@@ -290,6 +320,11 @@ void CSpotPlayer::eventHandler(std::unique_ptr<cspot::SpircHandler::Event> event
     case cspot::SpircHandler::EventType::PREV:
         raopcl_stop(raopClient);
         raopcl_flush(raopClient);
+        for (auto m : groupMembers) {
+            struct raopcl_s* rc = shadowRaop(m);
+            raopcl_stop(rc);
+            raopcl_flush(rc);
+        }
         break;
     case cspot::SpircHandler::EventType::DISC:
         disconnect();
@@ -305,6 +340,11 @@ void CSpotPlayer::eventHandler(std::unique_ptr<cspot::SpircHandler::Event> event
         startOffset = std::get<int>(event->data);
         raopcl_stop(raopClient);
         raopcl_flush(raopClient);
+        for (auto m : groupMembers) {
+            struct raopcl_s* rc = shadowRaop(m);
+            raopcl_stop(rc);
+            raopcl_flush(rc);
+        }
 
         // must be done last to make sure the busy loop does not act before
         trackStatus = TRACK_READY;
@@ -316,6 +356,7 @@ void CSpotPlayer::eventHandler(std::unique_ptr<cspot::SpircHandler::Event> event
     case cspot::SpircHandler::EventType::VOLUME:
         volume = std::get<int>(event->data);
         shadowRequest(shadow, SPOT_VOLUME, volume);
+        for (auto m : groupMembers) shadowRequest(m, SPOT_VOLUME, volume);
         break;
     default:
         break;
@@ -581,6 +622,10 @@ struct spotPlayer* spotCreatePlayer(char* clientId, char* clientSecret, char* na
 void spotDeletePlayer(struct spotPlayer* spotPlayer) {
     auto player = (CSpotPlayer*) spotPlayer;
     delete player;
+}
+
+void spotAddGroupMember(struct spotPlayer* master, struct shadowPlayer* member) {
+    ((CSpotPlayer*)master)->addGroupMember(member);
 }
 
 void spotNotify(struct spotPlayer* spotPlayer, enum shadowEvent event, ...) {

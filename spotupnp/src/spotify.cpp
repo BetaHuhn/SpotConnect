@@ -104,6 +104,9 @@ private:
     std::deque<std::shared_ptr<HTTPstreamer>> streamers;
     std::shared_ptr<HTTPstreamer> player;
 
+    // group members: each entry is a shadow + its own queue of streamers
+    std::vector<std::pair<struct shadowPlayer*, std::deque<std::shared_ptr<HTTPstreamer>>>> groupStreams;
+
     bool flow;
     int cacheMode;
     std::deque<uint32_t> flowMarkers;
@@ -127,6 +130,7 @@ public:
         int64_t contentLength, int cacheMode, struct shadowPlayer* shadow, pthread_mutex_t* mutex);
     ~CSpotPlayer();
     void disconnect(bool abort = false);
+    void addGroupMember(struct shadowPlayer* member);
 
     void friend notify(CSpotPlayer *self, enum shadowEvent event, va_list args);
     bool friend getMetaForUrl(CSpotPlayer* self, const std::string url, metadata_t* metadata);
@@ -160,6 +164,13 @@ CSpotPlayer::~CSpotPlayer() {
     CSPOT_LOG(info, "done", name.c_str());
 }
 
+void CSpotPlayer::addGroupMember(struct shadowPlayer* member) {
+    groupStreams.emplace_back(member, std::deque<std::shared_ptr<HTTPstreamer>>());
+    // sync current volume to the new group member
+    shadowRequest(member, SPOT_VOLUME, volume);
+    CSPOT_LOG(info, "added group member %p to player <%s>", member, name.c_str());
+}
+
 size_t CSpotPlayer::writePCM(uint8_t* data, size_t bytes, std::string_view trackUnique) {
     // make sure we don't have a dead lock with a disconnect()
     if (!isRunning || isPaused) return 0;
@@ -186,8 +197,13 @@ size_t CSpotPlayer::writePCM(uint8_t* data, size_t bytes, std::string_view track
     if (flushed) return bytes;
 #endif
 
-    if (!streamers.empty() && streamers.front()->feedPCMFrames(data, bytes)) return bytes;
-    else return 0;
+    if (!streamers.empty() && streamers.front()->feedPCMFrames(data, bytes)) {
+        // feed the same PCM data to all group member streamers
+        for (auto& gs : groupStreams) {
+            if (!gs.second.empty()) gs.second.front()->feedPCMFrames(data, bytes);
+        }
+        return bytes;
+    } else return 0;
 }
 
 auto CSpotPlayer::postHandler(struct mg_connection* conn) {
@@ -244,6 +260,10 @@ void CSpotPlayer::trackHandler(std::string_view trackUnique) {
         streamers.front()->state = HTTPstreamer::DRAINING;
         CSPOT_LOG(info, "draining track %s", streamers.front()->streamId.c_str());
     }
+    // drain group member streamers as well
+    for (auto& gs : groupStreams) {
+        if (!gs.second.empty() && !flow) gs.second.front()->state = HTTPstreamer::DRAINING;
+    }
       
     auto newTrackInfo = spirc->getTrackQueue()->getTrackInfo(trackUnique);
     CSPOT_LOG(info, "new track id %s => <%s>", newTrackInfo.trackId.c_str(), newTrackInfo.name.c_str());
@@ -272,6 +292,24 @@ void CSpotPlayer::trackHandler(std::string_view trackUnique) {
  
         streamers.push_front(streamer);
         streamer->startTask();
+
+        // create and start a separate streamer for each group member
+        for (auto& gs : groupStreams) {
+            auto memberStreamer = std::make_shared<HTTPstreamer>(addr, id, index++, codec, flow, contentLength, cacheMode,
+                                                                 newTrackInfo, trackUnique, gs.second.empty() ? -startOffset : 0,
+                                                                 nullptr, nullptr);
+            metadata_t memberMeta = { 0 };
+            memberStreamer->getMetadata(&memberMeta);
+            memberMeta.duration += memberStreamer->offset;
+            if (flow) flowMarkers.push_front(memberMeta.duration);
+
+            shadowRequest(gs.first, SPOT_LOAD, memberStreamer->getStreamUrl().c_str(), &memberMeta, (uint32_t)-memberStreamer->offset);
+            if (!isPaused) shadowRequest(gs.first, SPOT_PLAY);
+
+            gs.second.push_front(memberStreamer);
+            memberStreamer->startTask();
+            CSPOT_LOG(info, "loading group member with id %s", memberStreamer->streamId.c_str());
+        }
     } else {
         CSPOT_LOG(info, "flow track of duration %d will start at %u", newTrackInfo.duration, flowMarkers.front());
         player->trackInfo = newTrackInfo;
@@ -295,6 +333,7 @@ void CSpotPlayer::trackHandler(std::string_view trackUnique) {
         std::scoped_lock lock(playerMutex);
 
         shadowRequest(shadow, SPOT_STOP);
+        for (auto& gs : groupStreams) shadowRequest(gs.first, SPOT_STOP);
 
         // memorize position for when track's beginning will be detected
         startOffset = std::get<int>(event->data);
@@ -303,6 +342,7 @@ void CSpotPlayer::trackHandler(std::string_view trackUnique) {
         // clean slate => wipe-out queue and pointers
         streamTrackUnique.clear();
         streamers.clear();
+        for (auto& gs : groupStreams) gs.second.clear();
         flowMarkers.clear();
         player.reset();
         playlistEnd = false;
@@ -323,6 +363,9 @@ void CSpotPlayer::trackHandler(std::string_view trackUnique) {
         CSPOT_LOG(info, isPaused ? "Pause" : "Play");
         if (player || !streamers.empty()) {
             shadowRequest(shadow, isPaused ? SPOT_PAUSE : SPOT_PLAY);
+            for (auto& gs : groupStreams) {
+                if (!gs.second.empty()) shadowRequest(gs.first, isPaused ? SPOT_PAUSE : SPOT_PLAY);
+            }
         }
         break;
     }
@@ -332,6 +375,7 @@ void CSpotPlayer::trackHandler(std::string_view trackUnique) {
         flushed = true;
 #ifndef SMART_FLUSH
         shadowRequest(shadow, SPOT_STOP);
+        for (auto& gs : groupStreams) shadowRequest(gs.first, SPOT_STOP);
 #endif
         break;
     }
@@ -340,6 +384,7 @@ void CSpotPlayer::trackHandler(std::string_view trackUnique) {
         std::scoped_lock lock(playerMutex);
         CSPOT_LOG(info, "next/prev");
         shadowRequest(shadow, SPOT_STOP);
+        for (auto& gs : groupStreams) shadowRequest(gs.first, SPOT_STOP);
         break;
     }
     case cspot::SpircHandler::EventType::DISC:
@@ -370,6 +415,7 @@ void CSpotPlayer::trackHandler(std::string_view trackUnique) {
         lastPosition = 0;
         
         shadowRequest(shadow, SPOT_STOP);
+        for (auto& gs : groupStreams) shadowRequest(gs.first, SPOT_STOP);
 
         // be careful that streamer's offset is negative
         metadata_t metadata = { 0 };
@@ -388,16 +434,38 @@ void CSpotPlayer::trackHandler(std::string_view trackUnique) {
 
         shadowRequest(shadow, SPOT_LOAD, streamer->getStreamUrl().c_str(), &metadata, -streamer->offset);
         if (!isPaused) shadowRequest(shadow, SPOT_PLAY);
+
+        // seek each group member: flush current streamer and re-create at new position
+        for (auto& gs : groupStreams) {
+            gs.second.clear();
+            auto memberStreamer = std::make_shared<HTTPstreamer>(addr, id, index++, codec, flow, contentLength, cacheMode,
+                                                                 streamer->trackInfo, streamer->trackUnique, -streamer->offset,
+                                                                 nullptr, nullptr);
+            metadata_t memberMeta = { 0 };
+            memberStreamer->setContentLength(contentLength);
+            memberStreamer->getMetadata(&memberMeta);
+            memberMeta.duration += memberStreamer->offset;
+
+            shadowRequest(gs.first, SPOT_LOAD, memberStreamer->getStreamUrl().c_str(), &memberMeta, -memberStreamer->offset);
+            if (!isPaused) shadowRequest(gs.first, SPOT_PLAY);
+
+            gs.second.push_front(memberStreamer);
+            memberStreamer->startTask();
+        }
         break;
     }
     case cspot::SpircHandler::EventType::DEPLETED:
         playlistEnd = true;
         streamers.front()->state = HTTPstreamer::DRAINING;
+        for (auto& gs : groupStreams) {
+            if (!gs.second.empty()) gs.second.front()->state = HTTPstreamer::DRAINING;
+        }
         CSPOT_LOG(info, "playlist ended, no track left to play");
         break;
     case cspot::SpircHandler::EventType::VOLUME:
         volume = std::get<int>(event->data);
         shadowRequest(shadow, SPOT_VOLUME, volume);
+        for (auto& gs : groupStreams) shadowRequest(gs.first, SPOT_VOLUME, volume);
         break;
     case cspot::SpircHandler::EventType::TRACK_INFO: {
         /* We can't use this directly to to set player->trackInfo because with ICY mode, the metadata
@@ -675,6 +743,10 @@ struct spotPlayer* spotCreatePlayer(char *client_id, char* client_secret, char* 
 void spotDeletePlayer(struct spotPlayer* spotPlayer) {
     auto player = (CSpotPlayer*) spotPlayer;
     delete player;
+}
+
+void spotAddGroupMember(struct spotPlayer* master, struct shadowPlayer* member) {
+    ((CSpotPlayer*)master)->addGroupMember(member);
 }
 
 bool spotGetMetaForUrl(struct spotPlayer* spotPlayer, const char *url, metadata_t *metadata) {

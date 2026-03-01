@@ -426,12 +426,39 @@ static bool mDNSsearchCallback(mdnssd_service_t *slist, void *cookie, bool *stop
 		}
 
 		if (AddRaopDevice(Device, s) && !glDiscovery) {
-			// create a new spotify device
+			// create a new spotify device with the device's own name
 			char id[6 * 2 + 1] = { 0 };
 			for (int i = 0; i < 6; i++) sprintf(id + i * 2, "%02x", Device->Config.MAC[i]);
 			if (!*(Device->Config.Name)) sprintf(Device->Config.Name, glNameFormat, Device->FriendlyName);
 			Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Name, id, Device->Credentials, glHost, Device->Config.VorbisRate, 
 												  FRAMES_PER_BLOCK, Device->Config.ReadAhead, (struct shadowPlayer*)Device);
+			// if the device belongs to a group, also create a group-level Spotify Connect player
+			if (Device->SpotPlayer && *Device->Config.Group) {
+				char groupId[6 * 2 + 1] = { 0 };
+				uint8_t groupMac[6] = { 0xAA, 0xAA };
+				*(uint32_t*)(groupMac + 2) = hash32(Device->Config.Group);
+				for (int i = 0; i < 6; i++) sprintf(groupId + i * 2, "%02x", groupMac[i]);
+				Device->GroupPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Group, groupId, Device->Credentials, glHost, Device->Config.VorbisRate,
+													   FRAMES_PER_BLOCK, Device->Config.ReadAhead, (struct shadowPlayer*)Device);
+				if (!Device->GroupPlayer) {
+					LOG_ERROR("[%p]: cannot create group Spotify instance (%s)", Device, Device->Config.Group);
+				}
+			}
+			glUpdated = true;
+		} else if (!glDiscovery && Device->Running && Device->Master && *Device->Config.Group &&
+				   *Device->Master->Config.Group && !strcmp(Device->Config.Group, Device->Master->Config.Group) &&
+				   Device->Master->GroupPlayer) {
+			// slave device: create its own individual SpotPlayer and register with master's group player
+			char id[6 * 2 + 1] = { 0 };
+			for (int i = 0; i < 6; i++) sprintf(id + i * 2, "%02x", Device->Config.MAC[i]);
+			if (!*(Device->Config.Name)) sprintf(Device->Config.Name, glNameFormat, Device->FriendlyName);
+			Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Name, id, Device->Credentials, glHost, Device->Config.VorbisRate,
+												  FRAMES_PER_BLOCK, Device->Config.ReadAhead, (struct shadowPlayer*)Device);
+			if (!Device->SpotPlayer) {
+				LOG_ERROR("[%p]: cannot create Spotify instance for slave (%s)", Device, Device->Config.Name);
+			}
+			spotAddGroupMember(Device->Master->GroupPlayer, (struct shadowPlayer*)Device);
+			LOG_INFO("[%p]: registered config group slave %s with master %s", Device, Device->Config.Name, Device->Master->Config.Name);
 			glUpdated = true;
 		}
 	}
@@ -540,8 +567,10 @@ static bool AddRaopDevice(struct sMR *Device, mdnssd_service_t *s) {
 	Device->SkipStart 		= 0;
 	Device->SkipDir 		= false;
 	Device->SpotPlayer		= NULL;
+	Device->GroupPlayer		= NULL;
 	Device->Raop 			= NULL;
 	Device->Expired			= 0;
+	Device->Master			= NULL;
 	
 	memset(Device->ActiveRemote, 0, 16);
 
@@ -584,8 +613,24 @@ static bool AddRaopDevice(struct sMR *Device, mdnssd_service_t *s) {
 		}
 	}
 
-	LOG_INFO("[%p]: adding renderer (%s@%s) with mac %hX-%X", Device, Device->FriendlyName, inet_ntoa(Device->PlayerIP),  
-	         *(uint16_t*)Device->Config.MAC, *(uint32_t*)(Device->Config.MAC + 2));
+	// check for config-based group assignment
+	if (*Device->Config.Group) {
+		for (int i = 0; i < MAX_RENDERERS; i++) {
+			struct sMR *p = glMRDevices + i;
+			if (p->Running && p != Device && *p->Config.Group && !strcmp(p->Config.Group, Device->Config.Group)) {
+				Device->Master = p;
+				LOG_INFO("[%p]: config group '%s': %s is slave of %s", Device, Device->Config.Group, Device->UDN, p->UDN);
+				break;
+			}
+		}
+	}
+
+	if (Device->Master) {
+		LOG_INFO("[%p]: adding renderer (%s@%s) as group slave", Device, Device->FriendlyName, inet_ntoa(Device->PlayerIP));
+	} else {
+		LOG_INFO("[%p]: adding renderer (%s@%s) with mac %hX-%X", Device, Device->FriendlyName, inet_ntoa(Device->PlayerIP),
+		         *(uint16_t*)Device->Config.MAC, *(uint32_t*)(Device->Config.MAC + 2));
+	}
 
 	// gather RAOP device capabilities, to be matched later
 	char *SampleSize = GetmDNSAttribute(s->attr, s->attr_count, "ss");
@@ -643,7 +688,8 @@ static bool AddRaopDevice(struct sMR *Device, mdnssd_service_t *s) {
 		return false;
 	}
 
-	return true;
+	// return false for group slaves so no SpotPlayer is created for them
+	return (Device->Master == NULL);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -658,6 +704,7 @@ static void FlushRaopDevices(void) {
 static void DelRaopDevice(struct sMR *Device) {
 	// delete the cspot end (no call will come from this side) and context
 	spotDeletePlayer(Device->SpotPlayer);
+	spotDeletePlayer(Device->GroupPlayer);
 	raopcl_destroy(Device->Raop);
 
 	// we are a passive entity, just want to make sure nothing will send more data (artwork)

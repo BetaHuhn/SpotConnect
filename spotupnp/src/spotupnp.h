@@ -64,6 +64,7 @@ typedef struct sMRConfig
 	bool		SendMetaData;
 	bool		SendCoverArt;
 	char		ArtWork[4*STR_LEN];
+	char		Group[STR_LEN];
 } tMRConfig;
 
 struct sMR {
@@ -76,6 +77,7 @@ struct sMR {
 	enum eMRstate 	State;
 	bool			ExpectStop;
 	struct spotPlayer *SpotPlayer;
+	struct spotPlayer *GroupPlayer;
 	metadata_t		MetaData;
 	enum spotEvent	SpotState;
 	uint32_t		Elapsed, ElapsedAccrued;

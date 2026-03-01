@@ -806,6 +806,7 @@ static void *UpdateThread(void *args) {
 							LOG_INFO("[%p]: removing unresponsive player (%s) with error count %d and timeout %d", Device,
 								      Device->Config.Name, Device->ErrorCount, now - Device->LastSeen);
 							spotDeletePlayer(Device->SpotPlayer);
+							spotDeletePlayer(Device->GroupPlayer);
 							// device's mutex returns unlocked
 							DelMRDevice(Device);
 						} else {
@@ -828,6 +829,7 @@ static void *UpdateThread(void *args) {
 
 				LOG_INFO("[%p]: renderer bye-bye: %s", Device, Device->Config.Name);
 				spotDeletePlayer(Device->SpotPlayer);
+				spotDeletePlayer(Device->GroupPlayer);
 				// device's mutex returns unlocked
 				DelMRDevice(Device);
 
@@ -932,7 +934,7 @@ static void *UpdateThread(void *args) {
 				glUpdated = true;
 			
 				if (AddMRDevice(Device, UDN, DescDoc, Update->Data) && !glDiscovery) {
-					// create a new Spotify Connect device
+					// create a new Spotify Connect device with the device's own name
 					char id[6*2+1] = { 0 };
 					for (int i = 0; i < 6; i++) sprintf(id + i*2, "%02x", Device->Config.mac[i]);
 					Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Name, id, Device->Credentials, glHost, Device->Config.VorbisRate,
@@ -943,6 +945,33 @@ static void *UpdateThread(void *args) {
 						pthread_mutex_lock(&Device->Mutex);
 						DelMRDevice(Device);
 					}
+					// if the device belongs to a group, also create a group-level Spotify Connect player
+					if (Device->SpotPlayer && *Device->Config.Group) {
+						char groupId[6*2+1] = { 0 };
+						uint8_t groupMac[6] = { 0xAA, 0xAA };
+						*(uint32_t*)(groupMac + 2) = hash32(Device->Config.Group);
+						for (int i = 0; i < 6; i++) sprintf(groupId + i*2, "%02x", groupMac[i]);
+						Device->GroupPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Group, groupId, Device->Credentials, glHost, Device->Config.VorbisRate,
+															   Device->Config.Codec, Device->Config.Flow, Device->Config.HTTPContentLength,
+															   Device->Config.CacheMode, (struct shadowPlayer*) Device, &Device->Mutex);
+						if (!Device->GroupPlayer) {
+							LOG_ERROR("[%p]: cannot create group Spotify instance (%s)", Device, Device->Config.Group);
+						}
+					}
+				} else if (!glDiscovery && Device->Running && Device->Master && *Device->Config.Group &&
+					   *Device->Master->Config.Group && !strcmp(Device->Config.Group, Device->Master->Config.Group) &&
+					   Device->Master->GroupPlayer) {
+					// slave device: create its own individual SpotPlayer and register with master's group player
+					char id[6*2+1] = { 0 };
+					for (int i = 0; i < 6; i++) sprintf(id + i*2, "%02x", Device->Config.mac[i]);
+					Device->SpotPlayer = spotCreatePlayer(glClientId, glClientSecret, Device->Config.Name, id, Device->Credentials, glHost, Device->Config.VorbisRate,
+														  Device->Config.Codec, Device->Config.Flow, Device->Config.HTTPContentLength,
+														  Device->Config.CacheMode, (struct shadowPlayer*) Device, &Device->Mutex);
+					if (!Device->SpotPlayer) {
+						LOG_ERROR("[%p]: cannot create Spotify instance for slave (%s)", Device, Device->Config.Name);
+					}
+					spotAddGroupMember(Device->Master->GroupPlayer, (struct shadowPlayer*) Device);
+					LOG_INFO("[%p]: registered config group slave %s with master %s", Device, Device->Config.Name, Device->Master->Config.Name);
 				}
 
 cleanup:
@@ -1036,6 +1065,7 @@ static bool AddMRDevice(struct sMR* Device, char* UDN, IXML_Document* DescDoc, c
 	Device->TimeOut = false;
 	Device->WaitCookie = Device->StartCookie = Device->LastCookie = NULL;
 	Device->SpotPlayer = NULL;
+	Device->GroupPlayer = NULL;
 	Device->Elapsed = 0;
 	Device->seqN = NULL;
 	Device->TrackPoll = Device->StatePoll = 0;
@@ -1097,6 +1127,19 @@ static bool AddMRDevice(struct sMR* Device, char* UDN, IXML_Document* DescDoc, c
 	Device->Master = GetMaster(Device, &friendlyName);
 	Device->Volume = CtrlGetVolume(Device);
 
+	// if not a Sonos slave, check for config-based group assignment
+	if (!Device->Master && *Device->Config.Group) {
+		for (int i = 0; i < glMaxDevices; i++) {
+			struct sMR *p = glMRDevices + i;
+			if (p->Running && p != Device && *p->Config.Group && !strcmp(p->Config.Group, Device->Config.Group)) {
+				// first discovered device with this group name is master; subsequent ones become slaves
+				Device->Master = p;
+				LOG_INFO("[%p]: config group '%s': %s is slave of %s", Device, Device->Config.Group, UDN, p->UDN);
+				break;
+			}
+		}
+	}
+
 	// set remaining items now that we are sure
 	if (*Device->Service[TOPOLOGY_IDX].ControlURL) {
 		Device->MetaData.duration = 1;
@@ -1148,7 +1191,7 @@ static bool AddMRDevice(struct sMR* Device, char* UDN, IXML_Document* DescDoc, c
 	}
 
 	if (Device->Master) {
-		LOG_INFO("[%p] skipping Sonos slave %s", Device, friendlyName);
+		LOG_INFO("[%p] skipping slave %s (group or Sonos)", Device, friendlyName);
 	} else {
 		LOG_INFO("[%p]: adding renderer (%s) with mac %hX%X", Device, friendlyName, *(uint16_t*)Device->Config.mac, *(uint32_t*)(Device->Config.mac + 2));
 	}
